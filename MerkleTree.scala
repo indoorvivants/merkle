@@ -3,6 +3,7 @@ package merkle
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.security.NoSuchAlgorithmException
+import scala.annotation.nowarn
 
 trait Hasher {
   def hash(bytes: Array[Byte]): Array[Byte]
@@ -196,8 +197,15 @@ object MerkleTree {
               // they are not computed on real inputs – which is not an issue for strings, but
               // things like FileMtime will be incorrect
               node = new Node(detectedHasher, label, children) {
-                override lazy val hash = Right(hexToBytes(serialisedHash))
-                override lazy val hashString = Right(serialisedHash)
+                @nowarn
+                override lazy val hash =
+                  Right[String, Array[Byte]](
+                    hexToBytes(serialisedHash)
+                  )
+
+                @nowarn
+                override lazy val hashString =
+                  Right[String, String](serialisedHash)
               }
               rest <- go(
                 t.tail.drop(childrenLines.length),
@@ -213,8 +221,13 @@ object MerkleTree {
 
             go(t.tail, level).map { l =>
               new Leaf(detectedHasher, label, serialisedData, toBytes) {
-                override lazy val hash = Right(hexToBytes(serialisedHash))
-                override lazy val hashString = Right(serialisedHash)
+                @nowarn
+                override lazy val hash =
+                  Right[String, Array[Byte]](hexToBytes(serialisedHash))
+
+                @nowarn
+                override lazy val hashString =
+                  Right[String, String](serialisedHash)
               } :: l
             }
           } else { // invalid
