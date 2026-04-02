@@ -1,8 +1,47 @@
+package merkle
+
 import java.nio.file.Path
 import java.security.MessageDigest
+import java.security.NoSuchAlgorithmException
+
+trait Hasher {
+  def hash(bytes: Array[Byte]): Array[Byte]
+}
+
+object Hasher {
+  def messageDigest(name: String): Hasher = new MessageDigestHasher(
+    MessageDigest.getInstance(name)
+  )
+
+  class MessageDigestHasher(private[Hasher] val digest: MessageDigest)
+      extends Hasher {
+    def hash(bytes: Array[Byte]): Array[Byte] = {
+      try { digest.digest(bytes) }
+      finally { digest.reset() }
+    }
+  }
+
+  def toStringID(h: Hasher): Option[String] = {
+    h match {
+      case m: MessageDigestHasher => Some(m.digest.getAlgorithm)
+      case _                      => None
+    }
+  }
+
+  def fromStringID(s: String): Option[Hasher] = {
+    try {
+      Some(messageDigest(s))
+    } catch {
+      case ex: NoSuchAlgorithmException => None
+    }
+  }
+}
 
 sealed abstract class MerkleTree {
   def label: String
+
+  /** @return
+    */
   def hash: Either[String, Array[Byte]]
   lazy val hashString: Either[String, String] = hash.map { hash =>
     val bytes = hash
@@ -94,17 +133,6 @@ sealed abstract class MerkleTree {
 }
 
 object MerkleTree {
-  val digest = MessageDigest.getInstance("SHA-256")
-
-  def sha(data: Array[Byte]) = {
-    try {
-      digest.update(data)
-      digest.digest()
-    } finally {
-      digest.reset()
-    }
-  }
-
   def serialise(
       t: MerkleTree,
       toBytesID: ToBytes[Any] => String = s =>
@@ -141,9 +169,12 @@ object MerkleTree {
   def read(
       lines: Vector[String],
       fromBytesId: String => ToBytes[Any] = s =>
-        ToBytes.fromStringID(s).getOrElse(sys.error(s"Unknown ToBytes id: $s"))
+        ToBytes.fromStringID(s).getOrElse(sys.error(s"Unknown ToBytes id: $s")),
+      fromHasherId: String => Hasher = s =>
+        Hasher.fromStringID(s).getOrElse(sys.error(s"Unknown Hasher id: $s"))
   ): Either[String, MerkleTree] = {
-    val (hasher, rest) = (lines.head, lines.tail)
+    val (hasherID, rest) = (lines.head, lines.tail)
+    val detectedHasher = fromHasherId(hasherID)
 
     def hexToBytes(hex: String): Array[Byte] = {
       hex.grouped(2).map(s => Integer.parseInt(s, 16).toByte).toArray
@@ -161,7 +192,10 @@ object MerkleTree {
             val childrenLines = t.tail.takeWhile(_.startsWith(indent + " "))
             for {
               children <- go(childrenLines, level + 1)
-              node = new Node(label, children) {
+              // We override the hashes in the nodes read from the file to make sure
+              // they are not computed on real inputs – which is not an issue for strings, but
+              // things like FileMtime will be incorrect
+              node = new Node(detectedHasher, label, children) {
                 override lazy val hash = Right(hexToBytes(serialisedHash))
                 override lazy val hashString = Right(serialisedHash)
               }
@@ -170,7 +204,6 @@ object MerkleTree {
                 level
               )
             } yield node :: rest
-            // Node(label, go(childrenLines, level + 1)) ::
           } else if (parts.length == 5) { // leaf
             val label = parts(0).stripPrefix(indent)
             val toBytes = fromBytesId(parts(2))
@@ -179,35 +212,39 @@ object MerkleTree {
             val serialisedHash = parts(4)
 
             go(t.tail, level).map { l =>
-              new Leaf(label, serialisedData, toBytes) {
+              new Leaf(detectedHasher, label, serialisedData, toBytes) {
                 override lazy val hash = Right(hexToBytes(serialisedHash))
                 override lazy val hashString = Right(serialisedHash)
               } :: l
             }
           } else { // invalid
-            Left(s"cannot parse line $line")
-          } // node
+            Left(s"cannot parse line: $line")
+          }
         case None => Right(Nil)
       }
     }
 
     go(rest, 0).flatMap {
-      case Nil         => Right(new Node("<empty tree>", Nil))
+      case Nil         => Right(new Node(detectedHasher, "<empty tree>", Nil))
       case head :: Nil => Right(head)
       case _           => Left("Invalid tree format")
     }
   }
 
-  class Leaf(
+  class Leaf private[MerkleTree] (
+      val hasher: Hasher,
       val label: String,
       val data: Array[Byte],
       val toBytes: ToBytes[Any]
   ) extends MerkleTree {
-    lazy val hash = toBytes.produce(data).map(sha)
+    lazy val hash = toBytes.produce(data).map(hasher.hash(_))
 
   }
-  class Node(val label: String, val subtrees: List[MerkleTree])
-      extends MerkleTree {
+  class Node private[MerkleTree] (
+      val hasher: Hasher,
+      val label: String,
+      val subtrees: List[MerkleTree]
+  ) extends MerkleTree {
     lazy val hash: Either[String, Array[Byte]] =
       subtrees
         .map(_.hash)
@@ -215,37 +252,42 @@ object MerkleTree {
           (acc, el) =>
             acc.flatMap(a => el.map(b => a ++ b))
         }
-        .map(sha)
+        .map(hasher.hash(_))
 
   }
 
-  def nest[T](label: String)(fields: T => Seq[MerkleTree]) =
-    (t: T) => new MerkleTree.Node(label, fields(t).toList)
+  class Builder(hasher: Hasher) {
 
-  def string(label: String, s: String) =
-    new Leaf(label, s.getBytes, ToBytes.Str)
+    def nest[T](label: String)(fields: T => Seq[MerkleTree]) =
+      (t: T) => new MerkleTree.Node(hasher, label, fields(t).toList)
 
-  def strings(label: String, s: Seq[String]) =
-    new Node(label, s.toList.map(i => string(i, i)))
+    def string(label: String, s: String) =
+      new Leaf(hasher, label, s.getBytes, ToBytes.Str)
 
-  def sortedStrings(label: String, s: Seq[String]) =
-    new Node(label, s.sorted.toList.map(i => string(i, i)))
+    def strings(label: String, s: Seq[String]) =
+      new Node(hasher, label, s.toList.map(i => string(i, i)))
 
-  def path(label: String, p: Path, tb: ToBytes[Path]) =
-    new Leaf(label, p.toAbsolutePath().toString.getBytes, tb)
+    def sortedStrings(label: String, s: Seq[String]) =
+      new Node(hasher, label, s.sorted.toList.map(i => string(i, i)))
 
-  def bool(label: String, value: Boolean) =
-    string(label, value.toString)
+    def path(label: String, p: Path, tb: ToBytes[Path]) =
+      new Leaf(hasher, label, p.toAbsolutePath().toString.getBytes, tb)
 
-  def sortedPaths(label: String, s: Seq[Path], tb: ToBytes[Path]) =
-    new Node(
-      label,
-      s.sorted.toList.map(i =>
-        new Leaf(
-          i.toAbsolutePath().toString,
-          i.toAbsolutePath().toString.getBytes,
-          tb
+    def bool(label: String, value: Boolean) =
+      string(label, value.toString)
+
+    def sortedPaths(label: String, s: Seq[Path], tb: ToBytes[Path]) =
+      new Node(
+        hasher,
+        label,
+        s.sorted.toList.map(i =>
+          new Leaf(
+            hasher,
+            i.toAbsolutePath().toString,
+            i.toAbsolutePath().toString.getBytes,
+            tb
+          )
         )
       )
-    )
+  }
 }

@@ -1,61 +1,22 @@
-sealed trait DiffTree extends Product with Serializable {
-  def render(colors: Boolean = true) = {
-    import DiffTree.*
-    def green(s: String) = if (colors) Console.GREEN + s + Console.RESET else ""
-    def red(s: String) = if (colors) Console.RED + s + Console.RESET else ""
-    def yellow(s: String) =
-      if (colors) Console.YELLOW + s + Console.RESET else ""
+package merkle
 
-    import Action.*
-    def indicator(action: Action) = action match {
-      case Added                      => yellow("+")
-      case Modified(oldHash, newHash) => yellow("~")
-      case Removed                    => red("-")
-      case Same                       => green("=")
-    }
+import MerkleTree.*
 
-    def go(
-        t: List[DiffTree],
-        level: Int,
-        acc: Vector[String]
-    ): Vector[String] = {
-      val tab = if (level != 0) "└" + ("─" * level) + " " else ""
-      t match {
-        case h :: t =>
-          h match {
-            case DNode(label, action, subtrees) =>
-              val line = tab + indicator(action) + " " + label
-              val sub = go(subtrees, level + 1, Vector.empty)
-              (line +: sub) ++ go(t, level, acc)
+sealed trait DiffTree extends Product with Serializable
 
-            case DLeaf(label, action) =>
-              val line = tab + indicator(action) + " " + label
-
-              line +: go(t, level, acc)
-          }
-        case Nil => acc
-      }
-    }
-
-    go(List(this), 0, Vector.empty).mkString("\n")
-
-  }
-
-}
 object DiffTree {
-  sealed trait Action extends Product with Serializable
-  object Action {
-    case object Added extends Action
-    case class Modified(oldHash: String, newHash: String) extends Action
-    case object Removed extends Action
-    case object Same extends Action
+  sealed trait DiffAction extends Product with Serializable
+  object DiffAction {
+    case object Added extends DiffAction
+    case class Modified(oldHash: String, newHash: String) extends DiffAction
+    case object Removed extends DiffAction
+    case object Same extends DiffAction
   }
 
-  case class DNode(label: String, action: Action, subtrees: List[DiffTree])
+  case class DNode(label: String, action: DiffAction, subtrees: List[DiffTree])
       extends DiffTree
-  case class DLeaf(label: String, action: Action) extends DiffTree
+  case class DLeaf(label: String, action: DiffAction) extends DiffTree
 
-  import MerkleTree.*
   def create(
       old: MerkleTree,
       recent: MerkleTree
@@ -66,7 +27,7 @@ object DiffTree {
           Right(
             DNode(
               o.label,
-              Action.Same,
+              DiffAction.Same,
               Nil
             )
           )
@@ -113,24 +74,26 @@ object DiffTree {
             Right(
               DNode(
                 o.label,
-                Action.Modified(
+                DiffAction.Modified(
                   o.hashString.getOrElse(""),
                   n.hashString.getOrElse("")
                 ),
-                added.result().map(s => DLeaf(s.label, Action.Added)) ++
-                  removed.result().map(s => DLeaf(s.label, Action.Removed)) ++
+                added.result().map(s => DLeaf(s.label, DiffAction.Added)) ++
+                  removed
+                    .result()
+                    .map(s => DLeaf(s.label, DiffAction.Removed)) ++
                   modified
               )
             )
           }
 
         case (o: Leaf, n: Leaf) if o.hashString == n.hashString =>
-          Right(DLeaf(o.label, Action.Same))
+          Right(DLeaf(o.label, DiffAction.Same))
         case (o: Leaf, n: Leaf) =>
           Right(
             DLeaf(
               o.label,
-              Action.Modified(
+              DiffAction.Modified(
                 o.hashString.getOrElse(""),
                 n.hashString.getOrElse("")
               )
@@ -141,5 +104,45 @@ object DiffTree {
 
     }
     go(old, recent)
+  }
+
+  def render(tree: DiffTree, colors: Boolean): Vector[String] = {
+    def green(s: String) = if (colors) Console.GREEN + s + Console.RESET else ""
+    def red(s: String) = if (colors) Console.RED + s + Console.RESET else ""
+    def yellow(s: String) =
+      if (colors) Console.YELLOW + s + Console.RESET else ""
+
+    import DiffAction.*
+    def indicator(action: DiffAction) = action match {
+      case Added                      => yellow("+")
+      case Modified(oldHash, newHash) => yellow("~")
+      case Removed                    => red("-")
+      case Same                       => green("=")
+    }
+
+    def go(
+        t: List[DiffTree],
+        level: Int,
+        acc: Vector[String]
+    ): Vector[String] = {
+      val tab = if (level != 0) "└" + ("─" * level) + " " else ""
+      t match {
+        case h :: t =>
+          h match {
+            case DNode(label, action, subtrees) =>
+              val line = tab + indicator(action) + " " + label
+              val sub = go(subtrees, level + 1, Vector.empty)
+              (line +: sub) ++ go(t, level, acc)
+
+            case DLeaf(label, action) =>
+              val line = tab + indicator(action) + " " + label
+
+              line +: go(t, level, acc)
+          }
+        case Nil => acc
+      }
+    }
+
+    go(List(tree), 0, Vector.empty)
   }
 }

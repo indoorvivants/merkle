@@ -1,14 +1,10 @@
+package merkle
+
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.nio.file.Paths
 import java.nio.file.Files
 import java.nio.file.FileVisitOption
-import DiffTree.DNode
-import DiffTree.DLeaf
-import DiffTree.Action.Added
-import DiffTree.Action.Modified
-import DiffTree.Action.Removed
-import DiffTree.Action.Same
 
 abstract class ToBytes[+A] extends Product with Serializable {
   def produce(raw: Array[Byte]): Either[String, Array[Byte]]
