@@ -232,7 +232,7 @@ object MerkleTree {
   }
 
   class Leaf private[MerkleTree] (
-      val hasher: Hasher,
+      hasher: Hasher,
       val label: String,
       val data: Array[Byte],
       val toBytes: ToBytes[Any]
@@ -241,7 +241,7 @@ object MerkleTree {
 
   }
   class Node private[MerkleTree] (
-      val hasher: Hasher,
+      hasher: Hasher,
       val label: String,
       val subtrees: List[MerkleTree]
   ) extends MerkleTree {

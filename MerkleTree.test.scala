@@ -2,6 +2,7 @@ import merkle.*
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.Files
+import merkle.DiffTree.DiffAction
 
 class MerkleTreeTest extends munit.FunSuite {
   test("construction") {
@@ -90,6 +91,33 @@ class MerkleTreeTest extends munit.FunSuite {
 
       val tree = buildConfigHasher(config)
 
+      val tree2 = buildConfigHasher(config.copy(artifactName = "bye"))
+
+      val empty = diffTree(tree, tree)
+
+      assertEquals(empty, DiffTree.DNode("BuildConfig", DiffAction.Same, Nil))
+
+      def stringHash(name: String) =
+        builder.string("artifactName", name).hashString.right.get
+
+      val diff = diffTree(tree, tree2)
+      assertEquals(
+        diff,
+        DiffTree.DNode(
+          "BuildConfig",
+          DiffAction
+            .Modified(tree.hashString.right.get, tree2.hashString.right.get),
+          List(
+            DiffTree.DLeaf(
+              "artifactName",
+              DiffAction.Modified(
+                stringHash("hello"),
+                stringHash("bye")
+              )
+            )
+          )
+        )
+      )
     }
   }
 
@@ -139,6 +167,10 @@ object Data {
         Files.deleteIfExists(loc)
       }
     }
+  }
+
+  def diffTree(tree: MerkleTree, tree2: MerkleTree) = {
+    DiffTree.create(tree, tree2).right.get
   }
 
   case class NativeConfig(
