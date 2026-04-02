@@ -169,13 +169,19 @@ object MerkleTree {
 
   def read(
       lines: Vector[String],
-      fromBytesId: String => ToBytes[Any] = s =>
-        ToBytes.fromStringID(s).getOrElse(sys.error(s"Unknown ToBytes id: $s")),
-      fromHasherId: String => Hasher = s =>
-        Hasher.fromStringID(s).getOrElse(sys.error(s"Unknown Hasher id: $s"))
+      fromBytesId: String => Option[ToBytes[Any]] = s =>
+        ToBytes.fromStringID(
+          s
+        ), // .getOrElse(sys.error(s"Unknown ToBytes id: $s")),
+      fromHasherId: String => Option[Hasher] = s =>
+        Hasher.fromStringID(
+          s
+        ) // .getOrElse(sys.error(s"Unknown Hasher id: $s"))
   ): Either[String, MerkleTree] = {
     val (hasherID, rest) = (lines.head, lines.tail)
-    val detectedHasher = fromHasherId(hasherID)
+    val detectedHasher = fromHasherId(hasherID).getOrElse {
+      return Left(s"Unknown Hasher id: $hasherID")
+    }
 
     def hexToBytes(hex: String): Array[Byte] = {
       hex.grouped(2).map(s => Integer.parseInt(s, 16).toByte).toArray
@@ -214,7 +220,10 @@ object MerkleTree {
             } yield node :: rest
           } else if (parts.length == 5) { // leaf
             val label = parts(0).stripPrefix(indent)
-            val toBytes = fromBytesId(parts(2))
+            val toBytes = fromBytesId(parts(2)).getOrElse {
+              return Left(s"Unknown ToBytes id: ${parts(2)}")
+            }
+
             val stringData = parts(3)
             val serialisedData = toBytes.serialiseData(stringData)
             val serialisedHash = parts(4)
