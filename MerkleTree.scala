@@ -200,18 +200,15 @@ object MerkleTree {
             } yield node :: rest
           } else if (parts.length == 5) { // leaf
             val label = parts(0).stripPrefix(indent)
-            val toBytes = fromBytesId(parts(2)).getOrElse {
-              return Left(s"Unknown ToBytes id: ${parts(2)}")
-            }
-
             val stringData = parts(3)
-            val serialisedData = toBytes.deserialise(stringData)
             val serialisedHash = parts(4)
 
             for {
-              tb <- fromBytesId(parts(2)).toRight(
+              toBytes <- fromBytesId(parts(2)).toRight(
                 s"Unknown ToBytes id: ${parts(2)}"
               )
+              serialisedData = toBytes.deserialise(stringData)
+
               rest <- go(hasher, t.tail, level).map { l =>
                 new Leaf(hasher, label, serialisedData, toBytes) {
                   // IMPORTANT
