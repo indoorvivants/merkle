@@ -2,7 +2,7 @@ import merkle.*
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.Files
-import merkle.DiffTree.DiffAction
+import merkle.DiffTree.DiffOutcome
 
 class MerkleTreeTest extends munit.FunSuite {
   test("construction") {
@@ -59,9 +59,9 @@ class MerkleTreeTest extends munit.FunSuite {
 
       val tree = buildConfigHasher(config)
 
-      val serialised = MerkleTree.serialise(tree)
+      val serialised = MerkleTree.serialise(tree).right.get
 
-      val readBack = MerkleTree.read(serialised).right.get
+      val readBack = MerkleTree.deserialise(serialised).right.get
 
       val hashFromRead = readBack.hashString.right.get
 
@@ -101,7 +101,7 @@ class MerkleTreeTest extends munit.FunSuite {
 
       val empty = diffTree(tree, tree)
 
-      assertEquals(empty, DiffTree.DNode("BuildConfig", DiffAction.Same, Nil))
+      assertEquals(empty, DiffTree.DNode("BuildConfig", DiffOutcome.Same, Nil))
 
       def stringHash(name: String) =
         builder.string("artifactName", name).hashString.right.get
@@ -111,12 +111,12 @@ class MerkleTreeTest extends munit.FunSuite {
         diff,
         DiffTree.DNode(
           "BuildConfig",
-          DiffAction
+          DiffOutcome
             .Modified(tree.hashString.right.get, tree2.hashString.right.get),
           List(
             DiffTree.DLeaf(
               "artifactName",
-              DiffAction.Modified(
+              DiffOutcome.Modified(
                 stringHash("hello"),
                 stringHash("bye")
               )

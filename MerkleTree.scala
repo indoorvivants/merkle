@@ -5,45 +5,41 @@ import java.security.MessageDigest
 import java.security.NoSuchAlgorithmException
 import scala.annotation.nowarn
 
-trait Hasher {
-  def hash(bytes: Array[Byte]): Array[Byte]
-}
-
-object Hasher {
-  def messageDigest(name: String): Hasher = new MessageDigestHasher(
-    MessageDigest.getInstance(name)
-  )
-
-  class MessageDigestHasher(private[Hasher] val digest: MessageDigest)
-      extends Hasher {
-    def hash(bytes: Array[Byte]): Array[Byte] = {
-      try { digest.digest(bytes) }
-      finally { digest.reset() }
-    }
-  }
-
-  def toStringID(h: Hasher): Option[String] = {
-    h match {
-      case m: MessageDigestHasher => Some(m.digest.getAlgorithm)
-      case _                      => None
-    }
-  }
-
-  def fromStringID(s: String): Option[Hasher] = {
-    try {
-      Some(messageDigest(s))
-    } catch {
-      case ex: NoSuchAlgorithmException => None
-    }
-  }
-}
-
+/** A Merkle tree is a data structure which consists of leaves – that hash their
+  * data contents according to user-provided procedure and data interpretation,
+  * and nodes – which hash the hashes of their subtrees.
+  *
+  * This allows for fast comparison between two trees, as we only need to
+  * compared the root node hashes
+  */
 sealed abstract class MerkleTree {
+
+  /** Instance of the Hasher used to produce hashes
+    *
+    * @return
+    */
+  def hasher: Hasher
+
+  /** Human-readable label for this node. Labels are important – they are
+    * preserved in (de-)serialisation, are present in the rendering, and are
+    * used for structural checks when constructing a [[DiffTree]]
+    *
+    * @return
+    */
   def label: String
 
-  /** @return
+  /** Hash of this node contents. IMPORTANT: hash computation is lazy and
+    * cached. The only reason this is a `def` and not a `lazy val` is that Scala
+    * does not allow abstract lazy values
+    *
+    * @return
     */
   def hash: Either[String, Array[Byte]]
+
+  /** Stringified hex representation of the hash of the data (see [[hash]])
+    *
+    * @return
+    */
   lazy val hashString: Either[String, String] = hash.map { hash =>
     val bytes = hash
     val sb = new StringBuilder()
@@ -59,7 +55,240 @@ sealed abstract class MerkleTree {
     sb.toString()
   }
 
-  def render(colors: Boolean = true): String = {
+  /** Renders the tree as a list of strings.
+    *
+    * @param colors
+    *   whether to use ASCII colours or not
+    * @return
+    */
+  def render(colors: Boolean = true): Vector[String] =
+    MerkleTree.render(this, colors)
+}
+
+object MerkleTree {
+
+  /** Serialises the tree to a list of lines that can be saved to a file and
+    * read back again using the [[deserialise]] method.
+    *
+    * IMPORTANT: serialisation will force the evaluation of all the hashes
+    *
+    * @param tree
+    *   tree to serialise
+    * @param toHashID
+    *   function to convert a [[Hasher]] to a string ID (see
+    *   [[Hasher.toStringID]])
+    * @param toBytesID
+    *   function to convert a [[ToBytes]] instance to a string ID (see
+    *   [[ToBytes.toStringID]])
+    * @return
+    */
+  def serialise(
+      tree: MerkleTree,
+      toHashID: Hasher => Option[String] = Hasher.toStringID(_),
+      toBytesID: ToBytes[Any] => Option[String] = ToBytes.toStringID(_)
+  ): Either[String, Vector[String]] = {
+    def go(tree: MerkleTree, level: Int): Either[String, Vector[String]] = {
+      tree match {
+        case n: Node =>
+          import n.*
+          val idLabel = " " * level + label
+          for {
+            cur <- Right(
+              Seq(idLabel, "n", tree.hashString.fold(identity, identity))
+                .mkString("\t")
+            )
+            next <- subtrees.toVector.foldLeft[Either[String, Vector[String]]](
+              Right(Vector.empty[String])
+            ) { (acc, el) =>
+              for {
+                cur <- acc
+                nest <- go(el, level + 1)
+              } yield cur ++ nest
+            }
+          } yield cur +: next
+        case l: Leaf =>
+          val idLabel = " " * level + l.label
+
+          for {
+            tbID <- toBytesID(l.toBytes).toRight(
+              s"No ID for ToBytes: ${l.toBytes}"
+            )
+          } yield Vector(
+            Seq[String](
+              idLabel,
+              "l",
+              tbID,
+              l.toBytes.serialise(l.data),
+              tree.hashString.fold(identity, identity)
+            ).mkString("\t")
+          )
+
+      }
+    }
+
+    for {
+      hashLine <- toHashID(tree.hasher).toRight(
+        s"No hash ID for hasher ${tree.hasher}"
+      )
+      tree <- go(tree, 0)
+    } yield hashLine +: tree
+  }
+
+  /** Deserialises the Merkle tree from a list of strings. IMPORTANT: the hashes
+    * are read from the serialised format and cached in the tree – meaning the
+    * tree will never recompute the hashes even if they depend on external
+    * factors such as file system.
+    *
+    * This means an instance of the tree returned from this method is frozen in
+    * time and is safe to compare to another tree of same structure constructed
+    * over live data
+    *
+    * @param lines
+    *   lines of the serialised tree (without line end markers)
+    * @param fromBytesId
+    *   function that produces an instance of ToBytes from its serialised ID
+    *   (see [[ToBytes.fromStringID]])
+    * @param fromHasherId
+    *   function that produces an instance of Hasher from its serialised ID (see
+    *   [[Hasher.fromStringID]])
+    * @return
+    */
+  def deserialise(
+      lines: Vector[String],
+      fromBytesId: String => Option[ToBytes[Any]] = s =>
+        ToBytes.fromStringID(s),
+      fromHasherId: String => Option[Hasher] = s => Hasher.fromStringID(s)
+  ): Either[String, MerkleTree] = {
+    val (hasherID, rest) = (lines.head, lines.tail)
+
+    def hexToBytes(hex: String): Array[Byte] = {
+      hex.grouped(2).map(s => Integer.parseInt(s, 16).toByte).toArray
+    }
+
+    def go(
+        hasher: Hasher,
+        t: Vector[String],
+        level: Int
+    ): Either[String, List[MerkleTree]] = {
+      val indent = " " * level
+
+      t.headOption match {
+        case Some(line) =>
+          val parts = line.split("\t").toList
+          if (parts.length == 3) {
+            val label = parts(0).stripPrefix(indent)
+            val serialisedHash = parts(2)
+            val childrenLines = t.tail.takeWhile(_.startsWith(indent + " "))
+            for {
+              children <- go(hasher, childrenLines, level + 1)
+              // IMPORTANT
+              // We override the hashes in the nodes read from the file to make sure
+              // they are not computed on real inputs – which is not an issue for strings, but
+              // things like FileMtime will be incorrect
+              node = new Node(hasher, label, children) {
+                @nowarn
+                override lazy val hash =
+                  Right[String, Array[Byte]](
+                    hexToBytes(serialisedHash)
+                  )
+
+                @nowarn
+                override lazy val hashString =
+                  Right[String, String](serialisedHash)
+              }
+              rest <- go(hasher, t.tail.drop(childrenLines.length), level)
+            } yield node :: rest
+          } else if (parts.length == 5) { // leaf
+            val label = parts(0).stripPrefix(indent)
+            val toBytes = fromBytesId(parts(2)).getOrElse {
+              return Left(s"Unknown ToBytes id: ${parts(2)}")
+            }
+
+            val stringData = parts(3)
+            val serialisedData = toBytes.deserialise(stringData)
+            val serialisedHash = parts(4)
+
+            for {
+              tb <- fromBytesId(parts(2)).toRight(
+                s"Unknown ToBytes id: ${parts(2)}"
+              )
+              rest <- go(hasher, t.tail, level).map { l =>
+                new Leaf(hasher, label, serialisedData, toBytes) {
+                  // IMPORTANT
+                  // We override the hashes in the nodes read from the file to make sure
+                  // they are not computed on real inputs – which is not an issue for strings, but
+                  // things like FileMtime will be incorrect
+                  @nowarn
+                  override lazy val hash =
+                    Right[String, Array[Byte]](hexToBytes(serialisedHash))
+
+                  @nowarn
+                  override lazy val hashString =
+                    Right[String, String](serialisedHash)
+                } :: l
+              }
+            } yield rest
+          } else { // invalid
+            Left(s"cannot parse line: $line")
+          }
+        case None => Right(Nil)
+      }
+    }
+
+    val detectedHasher =
+      fromHasherId(hasherID).toRight(s"Unknown Hasher id: $hasherID")
+
+    for {
+      hasher <- detectedHasher
+      tree <- go(hasher, rest, 0)
+      result <- tree match {
+        case Nil         => Right(new Node(hasher, "<empty tree>", Nil))
+        case head :: Nil => Right(head)
+        case _           => Left("Invalid tree format")
+      }
+    } yield result
+  }
+
+  class Leaf private[merkle] (
+      val hasher: Hasher,
+      val label: String,
+      val data: Array[Byte],
+      val toBytes: ToBytes[Any]
+  ) extends MerkleTree {
+    lazy val hash = toBytes.hashableData(data).map(hasher.hash(_))
+
+    override def toString: String =
+      s"MerkleTree.Leaf($label, ${ToBytes.toStringID(toBytes).getOrElse("")} ${toBytes.serialise(data)})"
+
+  }
+  class Node private[merkle] (
+      val hasher: Hasher,
+      val label: String,
+      val subtrees: List[MerkleTree]
+  ) extends MerkleTree {
+    override def toString: String =
+      s"MerkleTree.Node($label, ${subtrees.mkString(", ")})"
+    lazy val hash: Either[String, Array[Byte]] =
+      subtrees
+        .map(_.hash)
+        .foldLeft[Either[String, Array[Byte]]](Right(Array[Byte]())) {
+          (acc, el) =>
+            acc.flatMap(a => el.map(b => a ++ b))
+        }
+        .map(hasher.hash(_))
+
+  }
+
+  /** Renders a given [[MerkleTree]] as a vector of strings.
+    *
+    * This representation is purely for visualisation – for reversible
+    * serialisation use [[serialise]]
+    *
+    * @param tree
+    * @param colors
+    * @return
+    */
+  def render(tree: MerkleTree, colors: Boolean = true): Vector[String] = {
 
     def red(s: String) = if (colors) Console.RED + s + Console.RESET else s
     def blue(s: String) = if (colors) Console.BLUE + s + Console.RESET else s
@@ -78,7 +307,8 @@ sealed abstract class MerkleTree {
       nodes match {
         case Nil                        => result
         case (l: MerkleTree.Leaf) :: tl =>
-          val toBytesLabel = l.toBytes.label
+          val toBytesLabel = ToBytes
+            .toStringID(l.toBytes)
             .map(l => yellow(l + " "))
             .getOrElse("")
 
@@ -98,14 +328,14 @@ sealed abstract class MerkleTree {
 
           def err(l: String) = if (isError && colors) red(l) else blue(l)
 
-          val rd = l.toBytes.renderData(l.data)
+          val rd = l.toBytes.serialise(l.data)
 
           val lines = Seq(
             Seq(
               tab,
               bold(l.label + ": "),
               hashableLabel,
-              if (label == rd) "" else rd
+              if (l.label == rd) "" else rd
             ).mkString,
             indent + err(hashStrRaw)
           )
@@ -136,192 +366,7 @@ sealed abstract class MerkleTree {
 
     }
 
-    go(List(this), 0, Vector.empty).mkString("\n")
-  }
-}
-
-object MerkleTree {
-  def serialise(
-      t: MerkleTree,
-      toBytesID: ToBytes[Any] => String = s =>
-        ToBytes.toStringID(s).getOrElse(sys.error(s"Unknown ToBytes id: $s"))
-  ): Vector[String] = {
-    def go(tree: MerkleTree, level: Int): Vector[String] = {
-
-      tree match {
-        case n: Node =>
-          import n.*
-          val idLabel = " " * level + label
-          Seq(idLabel, "n", tree.hashString.fold(identity, identity))
-            .mkString("\t") +: subtrees.toVector.flatMap(go(_, level + 1))
-        case l: Leaf =>
-          import l.*
-          val idLabel = " " * level + label
-          Vector(
-            Seq(
-              idLabel,
-              "l",
-              toBytesID(toBytes),
-              toBytes.renderData(data),
-              tree.hashString.fold(identity, identity)
-            )
-              .mkString("\t")
-          )
-
-      }
-    }
-
-    "SHA-256" +: go(t, 0)
+    go(List(tree), 0, Vector.empty)
   }
 
-  def read(
-      lines: Vector[String],
-      fromBytesId: String => Option[ToBytes[Any]] = s =>
-        ToBytes.fromStringID(
-          s
-        ), // .getOrElse(sys.error(s"Unknown ToBytes id: $s")),
-      fromHasherId: String => Option[Hasher] = s =>
-        Hasher.fromStringID(
-          s
-        ) // .getOrElse(sys.error(s"Unknown Hasher id: $s"))
-  ): Either[String, MerkleTree] = {
-    val (hasherID, rest) = (lines.head, lines.tail)
-    val detectedHasher = fromHasherId(hasherID).getOrElse {
-      return Left(s"Unknown Hasher id: $hasherID")
-    }
-
-    def hexToBytes(hex: String): Array[Byte] = {
-      hex.grouped(2).map(s => Integer.parseInt(s, 16).toByte).toArray
-    }
-
-    def go(t: Vector[String], level: Int): Either[String, List[MerkleTree]] = {
-      val indent = " " * level
-
-      t.headOption match {
-        case Some(line) =>
-          val parts = line.split("\t").toList
-          if (parts.length == 3) {
-            val label = parts(0).stripPrefix(indent)
-            val serialisedHash = parts(2)
-            val childrenLines = t.tail.takeWhile(_.startsWith(indent + " "))
-            for {
-              children <- go(childrenLines, level + 1)
-              // We override the hashes in the nodes read from the file to make sure
-              // they are not computed on real inputs – which is not an issue for strings, but
-              // things like FileMtime will be incorrect
-              node = new Node(detectedHasher, label, children) {
-                @nowarn
-                override lazy val hash =
-                  Right[String, Array[Byte]](
-                    hexToBytes(serialisedHash)
-                  )
-
-                @nowarn
-                override lazy val hashString =
-                  Right[String, String](serialisedHash)
-              }
-              rest <- go(
-                t.tail.drop(childrenLines.length),
-                level
-              )
-            } yield node :: rest
-          } else if (parts.length == 5) { // leaf
-            val label = parts(0).stripPrefix(indent)
-            val toBytes = fromBytesId(parts(2)).getOrElse {
-              return Left(s"Unknown ToBytes id: ${parts(2)}")
-            }
-
-            val stringData = parts(3)
-            val serialisedData = toBytes.serialiseData(stringData)
-            val serialisedHash = parts(4)
-
-            go(t.tail, level).map { l =>
-              new Leaf(detectedHasher, label, serialisedData, toBytes) {
-                @nowarn
-                override lazy val hash =
-                  Right[String, Array[Byte]](hexToBytes(serialisedHash))
-
-                @nowarn
-                override lazy val hashString =
-                  Right[String, String](serialisedHash)
-              } :: l
-            }
-          } else { // invalid
-            Left(s"cannot parse line: $line")
-          }
-        case None => Right(Nil)
-      }
-    }
-
-    go(rest, 0).flatMap {
-      case Nil         => Right(new Node(detectedHasher, "<empty tree>", Nil))
-      case head :: Nil => Right(head)
-      case _           => Left("Invalid tree format")
-    }
-  }
-
-  class Leaf private[MerkleTree] (
-      hasher: Hasher,
-      val label: String,
-      val data: Array[Byte],
-      val toBytes: ToBytes[Any]
-  ) extends MerkleTree {
-    lazy val hash = toBytes.hashableData(data).map(hasher.hash(_))
-
-    override def toString: String =
-      s"MerkleTree.Leaf($label, ${toBytes.label.getOrElse("")} ${toBytes.renderData(data)})"
-
-  }
-  class Node private[MerkleTree] (
-      hasher: Hasher,
-      val label: String,
-      val subtrees: List[MerkleTree]
-  ) extends MerkleTree {
-    override def toString: String =
-      s"MerkleTree.Node($label, ${subtrees.mkString(", ")})"
-    lazy val hash: Either[String, Array[Byte]] =
-      subtrees
-        .map(_.hash)
-        .foldLeft[Either[String, Array[Byte]]](Right(Array[Byte]())) {
-          (acc, el) =>
-            acc.flatMap(a => el.map(b => a ++ b))
-        }
-        .map(hasher.hash(_))
-
-  }
-
-  class Builder(hasher: Hasher) {
-
-    def nest[T](label: String)(fields: T => Seq[MerkleTree]) =
-      (t: T) => new MerkleTree.Node(hasher, label, fields(t).toList)
-
-    def string(label: String, s: String) =
-      new Leaf(hasher, label, s.getBytes, ToBytes.Str)
-
-    def strings(label: String, s: Seq[String]) =
-      new Node(hasher, label, s.toList.map(i => string(i, i)))
-
-    def sortedStrings(label: String, s: Seq[String]) =
-      new Node(hasher, label, s.sorted.toList.map(i => string(i, i)))
-
-    def path(label: String, p: Path, tb: ToBytes[Path]) =
-      new Leaf(hasher, label, p.toAbsolutePath().toString.getBytes, tb)
-
-    def bool(label: String, value: Boolean) =
-      string(label, value.toString)
-
-    def sortedPaths(label: String, s: Seq[Path], tb: ToBytes[Path]) =
-      new Node(
-        hasher,
-        label,
-        s.sorted.toList.map(i =>
-          new Leaf(
-            hasher,
-            i.toAbsolutePath().toString,
-            i.toAbsolutePath().toString.getBytes,
-            tb
-          )
-        )
-      )
-  }
 }

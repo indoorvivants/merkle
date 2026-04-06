@@ -1,33 +1,66 @@
 package merkle
 
 import MerkleTree.*
+import merkle.DiffTree.DNode
+import merkle.DiffTree.DLeaf
 
-sealed trait DiffTree extends Product with Serializable
-
-object DiffTree {
-  sealed trait DiffAction extends Product with Serializable
-  object DiffAction {
-    case object Added extends DiffAction
-    case class Modified(oldHash: String, newHash: String) extends DiffAction
-    case object Removed extends DiffAction
-    case object Same extends DiffAction
+/** A [[DiffTree]] is a data structured produced by comparing two [[MerkleTree]]
+  * instances with a similar structure. This tree does not necessarily cover
+  * every node and leaf present in either of the original [[MerkleTree]]
+  * instances – the focus is on the differences.
+  */
+sealed trait DiffTree extends Product with Serializable {
+  def hasDifferences: Boolean = this match {
+    case DNode(label, action, subtrees) =>
+      action != DiffTree.DiffOutcome.Same
+    case DLeaf(label, action) => action != DiffTree.DiffOutcome.Same
   }
 
-  case class DNode(label: String, action: DiffAction, subtrees: List[DiffTree])
-      extends DiffTree
-  case class DLeaf(label: String, action: DiffAction) extends DiffTree
+  def render(colors: Boolean = true): Vector[String] =
+    DiffTree.render(this, colors)
+}
 
+object DiffTree {
+  sealed trait DiffOutcome extends Product with Serializable
+  object DiffOutcome {
+    case object Added extends DiffOutcome
+    case class Modified(oldHash: String, newHash: String) extends DiffOutcome
+    case object Removed extends DiffOutcome
+    case object Same extends DiffOutcome
+  }
+
+  case class DNode(label: String, action: DiffOutcome, subtrees: List[DiffTree])
+      extends DiffTree
+
+  case class DLeaf(label: String, action: DiffOutcome) extends DiffTree
+
+  /** Constructs a [[DiffTree]] from two [[MerkleTree]] instances. The trees
+    * must have the same structure, with nodes and leaf labels being the same,
+    * otherwise this function will produce divergence error.
+    *
+    * The resulting tree won't necessarily contain the same node structure as
+    * the input trees. The focus is on showcasing differences, so the tree is
+    * constructed lazily, accumulating differences as early as possible – early
+    * meaning "as close to the root as possible"
+    *
+    * @param before
+    *   the "before" version of the tree
+    * @param after
+    *   the "after" version of the tree
+    * @return
+    */
   def create(
-      old: MerkleTree,
-      recent: MerkleTree
+      before: MerkleTree,
+      after: MerkleTree
   ): Either[String, DiffTree] = {
     def go(o: MerkleTree, n: MerkleTree): Either[String, DiffTree] = {
       (o, n) match {
-        case (o: Node, n: Node) if o.hashString == n.hashString =>
+        case (o: Node, n: Node)
+            if o.label == n.label && o.hashString == n.hashString =>
           Right(
             DNode(
               o.label,
-              DiffAction.Same,
+              DiffOutcome.Same,
               Nil
             )
           )
@@ -74,26 +107,27 @@ object DiffTree {
             Right(
               DNode(
                 o.label,
-                DiffAction.Modified(
+                DiffOutcome.Modified(
                   o.hashString.getOrElse(""),
                   n.hashString.getOrElse("")
                 ),
-                added.result().map(s => DLeaf(s.label, DiffAction.Added)) ++
+                added.result().map(s => DLeaf(s.label, DiffOutcome.Added)) ++
                   removed
                     .result()
-                    .map(s => DLeaf(s.label, DiffAction.Removed)) ++
+                    .map(s => DLeaf(s.label, DiffOutcome.Removed)) ++
                   modified
               )
             )
           }
 
-        case (o: Leaf, n: Leaf) if o.hashString == n.hashString =>
-          Right(DLeaf(o.label, DiffAction.Same))
-        case (o: Leaf, n: Leaf) =>
+        case (o: Leaf, n: Leaf)
+            if o.label == n.label && o.hashString == n.hashString =>
+          Right(DLeaf(o.label, DiffOutcome.Same))
+        case (o: Leaf, n: Leaf) if o.label == n.label =>
           Right(
             DLeaf(
               o.label,
-              DiffAction.Modified(
+              DiffOutcome.Modified(
                 o.hashString.getOrElse(""),
                 n.hashString.getOrElse("")
               )
@@ -103,17 +137,28 @@ object DiffTree {
       }
 
     }
-    go(old, recent)
+    go(before, after)
   }
 
-  def render(tree: DiffTree, colors: Boolean): Vector[String] = {
+  /** Renders a [[DiffTree]] as a vector of strings, with optional color
+    * highlighting. This is not a serialisation mechanism, the tree cannot be
+    * read back from this representation.
+    *
+    * @param tree
+    *   the tree to render
+    * @param colors
+    *   whether to use color highlighting
+    * @return
+    *   a vector of strings representing the rendered tree
+    */
+  def render(tree: DiffTree, colors: Boolean = true): Vector[String] = {
     def green(s: String) = if (colors) Console.GREEN + s + Console.RESET else ""
     def red(s: String) = if (colors) Console.RED + s + Console.RESET else ""
     def yellow(s: String) =
       if (colors) Console.YELLOW + s + Console.RESET else ""
 
-    import DiffAction.*
-    def indicator(action: DiffAction) = action match {
+    import DiffOutcome.*
+    def indicator(action: DiffOutcome) = action match {
       case Added                      => yellow("+")
       case Modified(oldHash, newHash) => yellow("~")
       case Removed                    => red("-")
