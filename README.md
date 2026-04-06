@@ -157,6 +157,10 @@ BuildConfig
 The rendered output shows the raw hashes, the tree structure, the 
 way the data is interepreted, and the raw value used by hashing.
 
+Perhaps the colours will make it more palatable:
+
+<img width="2242" height="712" alt="CleanShot 2026-04-06 at 22 25 28@2x" src="https://github.com/user-attachments/assets/87aa82f1-b59e-42bf-ad3c-ca6a268f4dd2" />
+
 This pretty printing is useful when debugging or building the tree,
 but reading the tree back from it is difficult – and that will be important if we want to save the state to a file. This is where serialisation comes in:
 
