@@ -58,19 +58,19 @@ class MerkleTreeTest extends munit.FunSuite {
 
       val tree = buildConfigHasher(config)
 
-      val serialised = MerkleTree.serialise(tree).right.get
+      val serialised = MerkleTree.serialise(tree).getOrThrow()
 
-      val readBack = MerkleTree.deserialise(serialised).right.get
+      val readBack = MerkleTree.deserialise(serialised).getOrThrow()
 
-      val hashFromRead = readBack.hashString.right.get
+      val hashFromRead = readBack.hashString.getOrThrow()
 
       // Without changes, the serialised version should have the same hash
-      assertEquals(tree.hashString.right.get, hashFromRead)
+      assertEquals(tree.hashString.getOrThrow(), hashFromRead)
 
       fs.write(".scalafmt.conf", "runner.dialect = 213")
 
       assertNotEquals(
-        buildConfigHasher(config).hashString.right.get,
+        buildConfigHasher(config).hashString.getOrThrow(),
         hashFromRead
       )
 
@@ -103,7 +103,7 @@ class MerkleTreeTest extends munit.FunSuite {
       assertEquals(empty, DiffTree.DNode("BuildConfig", DiffOutcome.Same, Nil))
 
       def stringHash(name: String) =
-        builder.string("artifactName", name).hashString.right.get
+        builder.string("artifactName", name).hashString.getOrThrow()
 
       val diff = diffTree(tree, tree2)
       assertEquals(
@@ -111,7 +111,10 @@ class MerkleTreeTest extends munit.FunSuite {
         DiffTree.DNode(
           "BuildConfig",
           DiffOutcome
-            .Modified(tree.hashString.right.get, tree2.hashString.right.get),
+            .Modified(
+              tree.hashString.getOrThrow(),
+              tree2.hashString.getOrThrow()
+            ),
           List(
             DiffTree.DLeaf(
               "artifactName",
@@ -181,7 +184,7 @@ object Data {
   }
 
   def diffTree(tree: MerkleTree, tree2: MerkleTree) = {
-    DiffTree.create(tree, tree2).right.get
+    DiffTree.create(tree, tree2).getOrThrow()
   }
 
   case class NativeConfig(

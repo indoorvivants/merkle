@@ -18,6 +18,9 @@ sealed trait DiffTree extends Product with Serializable {
 
   def render(colors: Boolean = true): Vector[String] =
     DiffTree.render(this, colors)
+
+  def renderToString(colors: Boolean = true): String =
+    DiffTree.render(this, colors).mkString("\n")
 }
 
 object DiffTree {
@@ -52,12 +55,12 @@ object DiffTree {
   def create(
       before: MerkleTree,
       after: MerkleTree
-  ): Either[String, DiffTree] = {
-    def go(o: MerkleTree, n: MerkleTree): Either[String, DiffTree] = {
+  ): Result[DiffTree] = {
+    def go(o: MerkleTree, n: MerkleTree): Result[DiffTree] = {
       (o, n) match {
         case (o: Node, n: Node)
             if o.label == n.label && o.hashString == n.hashString =>
-          Right(
+          Result(
             DNode(
               o.label,
               DiffOutcome.Same,
@@ -101,15 +104,15 @@ object DiffTree {
                 d2 <- r
               } yield d1 ++ d2
             }
-            .getOrElse(Right(Nil))
+            .getOrElse(Result(Nil))
 
           mod.flatMap { modified =>
-            Right(
+            Result(
               DNode(
                 o.label,
                 DiffOutcome.Modified(
-                  o.hashString.getOrElse(""),
-                  n.hashString.getOrElse("")
+                  o.hashString.fold(identity, _.getMessage()),
+                  n.hashString.fold(identity, _.getMessage())
                 ),
                 added.result().map(s => DLeaf(s.label, DiffOutcome.Added)) ++
                   removed
@@ -122,18 +125,18 @@ object DiffTree {
 
         case (o: Leaf, n: Leaf)
             if o.label == n.label && o.hashString == n.hashString =>
-          Right(DLeaf(o.label, DiffOutcome.Same))
+          Result(DLeaf(o.label, DiffOutcome.Same))
         case (o: Leaf, n: Leaf) if o.label == n.label =>
-          Right(
+          Result(
             DLeaf(
               o.label,
               DiffOutcome.Modified(
-                o.hashString.getOrElse(""),
-                n.hashString.getOrElse("")
+                o.hashString.fold(identity, _.getMessage()),
+                n.hashString.fold(identity, _.getMessage())
               )
             )
           )
-        case _ => Left("hash trees diverged")
+        case _ => Result.fail(Err.TreesDiverged)
       }
 
     }

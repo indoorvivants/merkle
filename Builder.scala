@@ -81,5 +81,9 @@ class Builder(hasher: Hasher) {
       )
     )
 
-  // def node(label: String, data: Array[Byte], tb: ToBytes[Any]): MerkleTree =
+  def leaf(label: String, data: Array[Byte], tb: ToBytes[Any]): MerkleTree =
+    new Leaf(hasher, label, data, tb)
+
+  def node(label: String, subtrees: Seq[MerkleTree]): MerkleTree =
+    new Node(hasher, label, subtrees.toList)
 }

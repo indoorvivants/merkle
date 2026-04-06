@@ -12,16 +12,16 @@ import java.nio.file.FileVisitOption
   * file contents and hash those instead.
   */
 abstract class ToBytes[+A] extends Product with Serializable {
-  def hashableData(raw: Array[Byte]): Either[String, Array[Byte]]
+  def hashableData(raw: Array[Byte]): Result[Array[Byte]]
 
-  def hashableString(raw: Array[Byte]): Either[String, String] = {
+  def hashableString(raw: Array[Byte]): Result[String] = {
     try {
       hashableData(raw).flatMap { data =>
-        Right(new String(data, "UTF-8"))
+        Result(new String(data, "UTF-8"))
       }
     } catch {
       case _: java.io.UnsupportedEncodingException =>
-        Left("Unsupported encoding")
+        Result.failMsg("Unsupported encoding")
     }
   }
 
@@ -54,11 +54,11 @@ object ToBytes {
     * is written in base64 encoding
     */
   case object Arr extends ToBytes[Array[Byte]] {
-    override def hashableData(raw: Array[Byte]): Either[String, Array[Byte]] =
-      Right(raw)
+    override def hashableData(raw: Array[Byte]): Result[Array[Byte]] =
+      Result(raw)
 
-    override def hashableString(raw: Array[Byte]): Either[String, String] =
-      Left("Raw byte arrays don't have a String encoding")
+    override def hashableString(raw: Array[Byte]): Result[String] =
+      Result.failMsg("Raw byte arrays don't have a String encoding")
 
     lazy val encoder = java.util.Base64.getEncoder()
     lazy val decoder = java.util.Base64.getDecoder()
@@ -71,10 +71,8 @@ object ToBytes {
   }
 
   case object Str extends ToBytes[String] {
-    override def hashableData(raw: Array[Byte]): Either[String, Array[Byte]] =
-      Right(
-        raw
-      )
+    override def hashableData(raw: Array[Byte]): Result[Array[Byte]] =
+      Result(raw)
 
     override def serialise(raw: Array[Byte]): String =
       new String(raw, "UTF-8")
@@ -89,14 +87,14 @@ object ToBytes {
   case object FileMtime extends ToBytes[Path] {
     override def hashableData(
         pathBytes: Array[Byte]
-    ): Either[String, Array[Byte]] = {
+    ): Result[Array[Byte]] = {
       val path = Paths.get(new String(pathBytes))
       if (Files.exists(path)) {
-        Right(
+        Result(
           Files.getLastModifiedTime(path).toMillis.toString.getBytes("UTF-8")
         )
       } else {
-        Left(s"Path $path does not exist")
+        Result.failMsg(s"Path $path does not exist")
       }
     }
 
@@ -112,14 +110,14 @@ object ToBytes {
   case object FileContents extends ToBytes[Path] {
     override def hashableData(
         pathBytes: Array[Byte]
-    ): Either[String, Array[Byte]] = {
+    ): Result[Array[Byte]] = {
       val path = Paths.get(new String(pathBytes))
       if (Files.exists(path)) {
         val contents =
           scala.io.Source.fromFile(path.toAbsolutePath().toString).mkString
-        Right(contents.getBytes("UTF-8"))
+        Result(contents.getBytes("UTF-8"))
       } else {
-        Left(s"Path $path does not exist")
+        Result.failMsg(s"Path $path does not exist")
       }
     }
 
@@ -137,10 +135,10 @@ object ToBytes {
   case object TreeMtime extends ToBytes[Path] {
     override def hashableData(
         pathBytes: Array[Byte]
-    ): Either[String, Array[Byte]] = {
+    ): Result[Array[Byte]] = {
       val path = Paths.get(new String(pathBytes))
       if (Files.exists(path)) {
-        Right {
+        Result {
           Files
             .walk(path, FileVisitOption.FOLLOW_LINKS)
             .map[Long](Files.getLastModifiedTime(_).toMillis)
@@ -152,7 +150,7 @@ object ToBytes {
             .getBytes("UTF-8")
         }
       } else {
-        Left(s"Path $path does not exist")
+        Result.failMsg(s"Path $path does not exist")
       }
     }
 
