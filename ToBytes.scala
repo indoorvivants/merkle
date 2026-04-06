@@ -7,11 +7,24 @@ import java.nio.file.Files
 import java.nio.file.FileVisitOption
 
 abstract class ToBytes[+A] extends Product with Serializable {
-  def produce(raw: Array[Byte]): Either[String, Array[Byte]]
+  def hashableData(raw: Array[Byte]): Either[String, Array[Byte]]
+
+  def hashableString(raw: Array[Byte]): Either[String, String] = {
+    try {
+      hashableData(raw).flatMap { data =>
+        Right(new String(data, "UTF-8"))
+      }
+    } catch {
+      case _: java.io.UnsupportedEncodingException =>
+        Left("Unsupported encoding")
+    }
+  }
+
   def label: Option[String] = None
 
   def renderData(raw: Array[Byte]): String
   def serialiseData(raw: String): Array[Byte]
+
 }
 
 object ToBytes {
@@ -32,9 +45,10 @@ object ToBytes {
   }
 
   case object Str extends ToBytes[String] {
-    override def produce(raw: Array[Byte]): Either[String, Array[Byte]] = Right(
-      raw
-    )
+    override def hashableData(raw: Array[Byte]): Either[String, Array[Byte]] =
+      Right(
+        raw
+      )
 
     override def renderData(raw: Array[Byte]): String =
       new String(raw, "UTF-8")
@@ -44,7 +58,7 @@ object ToBytes {
   }
 
   case object FileMtime extends ToBytes[Path] {
-    override def produce(
+    override def hashableData(
         pathBytes: Array[Byte]
     ): Either[String, Array[Byte]] = {
       val path = Paths.get(new String(pathBytes))
@@ -67,7 +81,7 @@ object ToBytes {
   }
 
   case object FileContents extends ToBytes[Path] {
-    override def produce(
+    override def hashableData(
         pathBytes: Array[Byte]
     ): Either[String, Array[Byte]] = {
       val path = Paths.get(new String(pathBytes))
@@ -91,7 +105,7 @@ object ToBytes {
   }
 
   case object TreeMtime extends ToBytes[Path] {
-    override def produce(
+    override def hashableData(
         pathBytes: Array[Byte]
     ): Either[String, Array[Byte]] = {
       val path = Paths.get(new String(pathBytes))

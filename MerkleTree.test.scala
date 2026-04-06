@@ -22,11 +22,17 @@ class MerkleTreeTest extends munit.FunSuite {
         fs.path(".scalafmt.conf")
       )
 
-      val hashBefore = buildConfigHasher(config).hashString
+      val hashBefore = {
+        val tree = buildConfigHasher(config)
+        tree.hashString
+      }
 
-      fs.touch("clang")
+      fs.write(".scalafmt.conf", "runner.dialect = 213")
 
-      val hashAfter = buildConfigHasher(config).hashString
+      val hashAfter = {
+        val tree = buildConfigHasher(config)
+        tree.hashString
+      }
 
       assertNotEquals(hashAfter, hashBefore)
 
@@ -62,7 +68,7 @@ class MerkleTreeTest extends munit.FunSuite {
       // Without changes, the serialised version should have the same hash
       assertEquals(tree.hashString.right.get, hashFromRead)
 
-      fs.touch("clang")
+      fs.write(".scalafmt.conf", "runner.dialect = 213")
 
       assertNotEquals(
         buildConfigHasher(config).hashString.right.get,
@@ -136,7 +142,13 @@ object Data {
       location.resolve(n)
     }
 
-    def touch(n: String) = {
+    // def touch(n: String) = {
+    //   Files.write(path(n), Files.readString(path(n)).getBytes())
+    // }
+
+    // We add a sleep here because sometimes execution is so fast
+    def sleepAndTouch(n: String, duration: Long = 500L) = {
+      Thread.sleep(duration)
       Files.write(path(n), Files.readString(path(n)).getBytes())
     }
 

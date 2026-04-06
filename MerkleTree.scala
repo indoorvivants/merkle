@@ -62,6 +62,7 @@ sealed abstract class MerkleTree {
   def render(colors: Boolean = true): String = {
 
     def red(s: String) = if (colors) Console.RED + s + Console.RESET else s
+    def blue(s: String) = if (colors) Console.BLUE + s + Console.RESET else s
     def bold(s: String) = if (colors) Console.BOLD + s + Console.RESET else s
     def yellow(s: String) =
       if (colors) Console.YELLOW + s + Console.RESET else s
@@ -72,6 +73,7 @@ sealed abstract class MerkleTree {
         result: Vector[String]
     ): Vector[String] = {
       val tab = if (level != 0) "└" + ("─" * level) + " " else ""
+      val indent = " " * tab.length
 
       nodes match {
         case Nil                        => result
@@ -80,27 +82,34 @@ sealed abstract class MerkleTree {
             .map(l => yellow(l + " "))
             .getOrElse("")
 
+          def trimOr(value: String, length: Int = 20) =
+            if (value.length > length) value.substring(0, length) + "..."
+            else value
+
+          val hashableLabel = l.toBytes.hashableString(l.data) match {
+            case Right(value) if l.toBytes != ToBytes.Str =>
+              toBytesLabel + yellow(s"(${trimOr(value)}) ")
+            case _ => toBytesLabel
+          }
+
           val isError = l.hashString.isLeft
           val hashStrRaw =
-            l.hashString.fold(identity, identity).grouped(64)
+            l.hashString.fold(identity, identity)
 
-          def err(l: String) = if (isError && colors) red(l) else l
+          def err(l: String) = if (isError && colors) red(l) else blue(l)
 
           val rd = l.toBytes.renderData(l.data)
 
-          val lines = hashStrRaw.toVector.zipWithIndex.map { case (e, i) =>
-            if (i == 0)
-              Seq(
-                err(e.padTo(64, ' ')),
-                " | ",
-                tab,
-                bold(label + ": "),
-                toBytesLabel,
-                if (label == rd) "" else rd
-              ).mkString
-            else
-              err(e.padTo(64, ' ')) + " | "
-          }
+          val lines = Seq(
+            Seq(
+              tab,
+              bold(l.label + ": "),
+              hashableLabel,
+              if (label == rd) "" else rd
+            ).mkString,
+            indent + err(hashStrRaw)
+          )
+
           go(
             tl,
             level,
@@ -109,16 +118,14 @@ sealed abstract class MerkleTree {
         case (l: MerkleTree.Node) :: tl =>
           val isError = l.hashString.isLeft
           val hashStrRaw =
-            l.hashString.fold(identity, identity).grouped(64)
+            l.hashString.fold(identity, identity)
 
-          def err(l: String) = if (isError && colors) red(l) else l
-          val lines = hashStrRaw.toVector.zipWithIndex.map { case (e, i) =>
-            if (i == 0)
-              err(e.padTo(64, ' ')) + " | " + tab + l.label
-            else
-              err(e.padTo(64, ' ')) + " | "
-          }
+          def err(l: String) = if (isError && colors) red(l) else blue(l)
 
+          val lines = Seq(
+            tab + bold(l.label),
+            indent + err(hashStrRaw)
+          )
           go(l.subtrees, level + 1, result ++ lines) ++ go(
             tl,
             level,
@@ -259,7 +266,10 @@ object MerkleTree {
       val data: Array[Byte],
       val toBytes: ToBytes[Any]
   ) extends MerkleTree {
-    lazy val hash = toBytes.produce(data).map(hasher.hash(_))
+    lazy val hash = toBytes.hashableData(data).map(hasher.hash(_))
+
+    override def toString: String =
+      s"MerkleTree.Leaf($label, ${toBytes.label.getOrElse("")} ${toBytes.renderData(data)})"
 
   }
   class Node private[MerkleTree] (
@@ -267,6 +277,8 @@ object MerkleTree {
       val label: String,
       val subtrees: List[MerkleTree]
   ) extends MerkleTree {
+    override def toString: String =
+      s"MerkleTree.Node($label, ${subtrees.mkString(", ")})"
     lazy val hash: Either[String, Array[Byte]] =
       subtrees
         .map(_.hash)
